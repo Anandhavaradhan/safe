@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anandh's Files</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;margin:0;background:#0f172a;color:#f1f5f9;line-height:1.5}
+  .wrap{max-width:780px;margin:0 auto;padding:24px 18px 48px}
+  h1{font-size:28px;margin:8px 0 4px} h2{margin-top:0}
+  p,li{font-size:17px;color:#cbd5e1}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:22px;margin-top:20px}
+  label{font-size:15px;color:#94a3b8;display:block;margin:14px 0 4px}
+  input{width:100%;box-sizing:border-box;font-size:17px;padding:13px;border-radius:10px;border:1px solid #475569;background:#0f172a;color:#fff}
+  button{width:100%;font-size:18px;font-weight:700;padding:14px;border:0;border-radius:10px;background:#38bdf8;color:#082f49;margin-top:12px;cursor:pointer}
+  button.secondary{background:#334155;color:#fff}
+  .file{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:14px;margin:12px 0}
+  .file b{font-size:17px;word-break:break-all} .file span{font-size:14px;color:#94a3b8}
+  .file a{white-space:nowrap;background:#38bdf8;color:#082f49;font-weight:700;text-decoration:none;padding:10px 14px;border-radius:8px}
+  #error{color:#fda4af;display:none;margin-top:10px}
+  #library{display:none}
+  #status{white-space:pre-wrap;font-size:15px;background:#0f172a;border:1px solid #334155;border-radius:10px;padding:12px;margin-top:12px;display:none}
+  .note{font-size:15px;background:#fef3c7;color:#78350f;border-radius:10px;padding:12px}
+  code{word-break:break-all}
+  .row{display:flex;gap:10px} .row button{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔒 Anandh's Files</h1>
+  <p>Open this page from anywhere, unlock it, and upload or download files — right here, on the page. No going to github.com to upload.</p>
+
+  <div id="gate" class="card">
+    <h2>Enter password</h2>
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <button onclick="unlock()">Unlock</button>
+    <p id="error">Wrong password. Try again.</p>
+    <p style="font-size:15px">Use the password set for this site. It is not shown on this page.</p>
+  </div>
+
+  <div id="library">
+    <div class="card">
+      <h2>1. Connect this page to your repo — once</h2>
+      <p style="font-size:15px">GitHub Pages alone can't save a file — there's no server behind it. So this page talks straight to GitHub's free API to save the file into your repo, and then Pages serves it. Your token is only stored in <i>your</i> browser, never in the site files.</p>
+      <label>GitHub username</label><input id="ghUser" placeholder="e.g. anandh123">
+      <label>Repo name</label><input id="ghRepo" placeholder="e.g. my-files">
+      <label>Branch (usually main)</label><input id="ghBranch" value="main">
+      <label>GitHub token — Contents read/write for this repo only</label>
+      <input id="ghToken" type="password" placeholder="Paste token here — it is not saved in the repo">
+      <label><input id="remember" type="checkbox" style="width:auto"> Remember on this device only (don't tick this on a shared device)</label>
+      <div class="row"><button onclick="saveSettings()">Save settings</button><button class="secondary" onclick="clearToken()">Forget token</button></div>
+      <details style="margin-top:14px"><summary style="font-size:17px;cursor:pointer">How to get a free token (2 minutes)</summary>
+      <ol>
+        <li>On github.com, go to Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.</li>
+        <li>Set it to <b>Only select repositories</b> and pick just this one repo.</li>
+        <li>Under Repository permissions, give <b>Contents: Read and write</b> only. Nothing else.</li>
+        <li>Copy the token, paste it above, and save. GitHub only shows it once, so keep it somewhere safe.</li>
+        <li>Make the repo first, and publish Pages from it (Settings → Pages → Deploy from a branch → main → / root), or this page will say “repo not found”.</li>
+      </ol></details>
+    </div>
+
+    <div class="card">
+      <h2>2. Upload from this page</h2>
+      <input id="fileInput" type="file" multiple>
+      <button onclick="uploadFiles()">Upload selected files</button>
+      <div id="status"></div>
+      <p style="font-size:15px">After upload, the Pages link can take 1–2 minutes to update. The “Raw” link below works immediately.</p>
+    </div>
+
+    <div class="card">
+      <h2>3. My files on GitHub Pages</h2>
+      <button onclick="listFiles()">Refresh file list</button>
+      <input id="search" placeholder="Search files…" oninput="filterFiles()" style="margin-top:12px">
+      <div id="fileList"><p>Press Refresh to load files from your repo.</p></div>
+      <button class="secondary" onclick="lock()">Lock site</button>
+    </div>
+
+    <div class="card">
+      <p class="note"><b>Important:</b> This password screen hides the library, but it does <b>not</b> encrypt the files. Anyone who guesses a direct Pages link could open that file. Good for notes and ordinary files — not for ID documents or passwords. Free limits: keep the site under about 1 GB, and a file under 100 MB through the API (in practice, keep uploads under about 25 MB from a phone browser).</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Site password is stored only as a SHA-256 hash, not in plain text.
+  // To change it, replace the hash below with the SHA-256 hash of the new password.
+  const SITE_PASSWORD_HASH = "694a656c336cbca931681039afac63dce18a7154c1ed11cc77ed73b28c245415";
+
+  function showStatus(text){ const s=document.getElementById("status"); s.style.display="block"; s.textContent=text; }
+  async function sha256Hex(text){
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,"0"); }).join("");
+  }
+  async function unlock(){
+    const enteredHash = await sha256Hex(document.getElementById("password").value);
+    if(enteredHash === SITE_PASSWORD_HASH){
+      document.getElementById("gate").style.display="none";
+      document.getElementById("library").style.display="block";
+      document.getElementById("error").style.display="none";
+      sessionStorage.setItem("unlocked","yes"); loadSettings(); listFiles();
+    } else { document.getElementById("error").style.display="block"; }
+  }
+  function lock(){
+    document.getElementById("library").style.display="none";
+    document.getElementById("gate").style.display="block";
+    document.getElementById("password").value=""; sessionStorage.removeItem("unlocked");
+  }
+  function getSettings(){
+    const stored = localStorage.getItem("gh-settings") || sessionStorage.getItem("gh-settings") || "{}";
+    try { return JSON.parse(stored); } catch(e){ return {}; }
+  }
+  function loadSettings(){
+    const s=getSettings();
+    document.getElementById("ghUser").value=s.user||"";
+    document.getElementById("ghRepo").value=s.repo||"";
+    document.getElementById("ghBranch").value=s.branch||"main";
+    document.getElementById("ghToken").value=s.token||"";
+    document.getElementById("remember").checked=!!localStorage.getItem("gh-settings");
+  }
+  function saveSettings(){
+    const s={user:document.getElementById("ghUser").value.trim(), repo:document.getElementById("ghRepo").value.trim(), branch:document.getElementById("ghBranch").value.trim()||"main", token:document.getElementById("ghToken").value.trim()};
+    if(!s.user||!s.repo||!s.token){ showStatus("Fill in username, repo and token first."); return; }
+    sessionStorage.removeItem("gh-settings"); localStorage.removeItem("gh-settings");
+    if(document.getElementById("remember").checked){ localStorage.setItem("gh-settings", JSON.stringify(s)); }
+    else { sessionStorage.setItem("gh-settings", JSON.stringify(s)); }
+    showStatus("Settings saved on this device only. Now press Refresh, or upload a file.");
+    listFiles();
+  }
+  function clearToken(){
+    sessionStorage.removeItem("gh-settings"); localStorage.removeItem("gh-settings");
+    document.getElementById("ghToken").value=""; showStatus("Token forgotten on this device.");
+  }
+  function apiHeaders(s){ return {"Accept":"application/vnd.github+json","Authorization":"Bearer "+s.token,"X-GitHub-Api-Version":"2022-11-28","Content-Type":"application/json"}; }
+  function pagesUrl(s,name){ return "https://"+s.user+".github.io/"+s.repo+"/files/"+encodeURIComponent(name); }
+  function rawUrl(s,name){ return "https://raw.githubusercontent.com/"+s.user+"/"+s.repo+"/"+s.branch+"/files/"+encodeURIComponent(name); }
+
+  async function listFiles(){
+    const s=getSettings();
+    if(!s.user||!s.repo||!s.token){ document.getElementById("fileList").innerHTML="<p>Fill in Settings first, then press Refresh.</p>"; return; }
+    document.getElementById("fileList").innerHTML="<p>Loading…</p>";
+    try{
+      const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files?ref="+encodeURIComponent(s.branch), {headers:apiHeaders(s)});
+      if(r.status===401) throw new Error("Token is invalid or expired (401). Make a new token and paste it in Settings.");
+      if(r.status===404) throw new Error("Repo or files/ folder not found (404). Check username, repo, branch, and that the repo has a files/ folder.");
+      if(!r.ok) throw new Error("GitHub said: "+r.status);
+      const items=await r.json();
+      const files=items.filter(x=>x.type==="file");
+      if(!files.length){ document.getElementById("fileList").innerHTML="<p>No files yet. Upload one above.</p>"; return; }
+      document.getElementById("fileList").innerHTML=files.map(function(f){
+        return '<div class="file"><div><b>'+f.name+'</b><br><span>'+Math.round(f.size/1024)+' KB</span></div><div><a href="'+pagesUrl(s,f.name)+'" target="_blank" rel="noopener">Pages</a> <a href="'+rawUrl(s,f.name)+'" target="_blank" rel="noopener" style="background:#334155;color:#fff">Raw</a></div></div>';
+      }).join("");
+    }catch(e){ document.getElementById("fileList").innerHTML="<p style='color:#fda4af'>"+e.message+"</p>"; }
+  }
+  function filterFiles(){
+    const q=document.getElementById("search").value.toLowerCase();
+    document.querySelectorAll("#fileList .file").forEach(function(el){ el.style.display=el.textContent.toLowerCase().includes(q)?"flex":"none"; });
+  }
+  function fileToBase64(file){
+    return new Promise(function(resolve,reject){
+      const reader=new FileReader();
+      reader.onload=function(){ const buf=new Uint8Array(reader.result); let bin=""; const chunk=0x8000;
+        for(let i=0;i<buf.length;i+=chunk){ bin+=String.fromCharCode.apply(null, buf.subarray(i,i+chunk)); }
+        resolve(btoa(bin)); };
+      reader.onerror=reject; reader.readAsArrayBuffer(file);
+    });
+  }
+  async function uploadFiles(){
+    const s=getSettings();
+    if(!s.user||!s.repo||!s.token){ showStatus("Fill in Settings first."); return; }
+    const files=document.getElementById("fileInput").files;
+    if(!files.length){ showStatus("Choose a file first."); return; }
+    showStatus("Uploading… please keep this page open.");
+    try{
+      for(const file of files){
+        showStatus("Uploading "+file.name+"…");
+        const content=await fileToBase64(file);
+        // If the file already exists, GitHub needs its sha to overwrite it.
+        let sha=null;
+        const check=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(file.name)+"?ref="+encodeURIComponent(s.branch), {headers:apiHeaders(s)});
+        if(check.ok){ const existing=await check.json(); sha=existing.sha; }
+        const body={message:"Upload "+file.name+" from Anandh's Files page", content:content, branch:s.branch};
+        if(sha) body.sha=sha;
+        const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(file.name), {method:"PUT", headers:apiHeaders(s), body:JSON.stringify(body)});
+        if(!r.ok){ const err=await r.json().catch(function(){return {};}); throw new Error("Upload failed for "+file.name+": "+(err.message||r.status)); }
+      }
+      showStatus("Done! Uploaded "+files.length+" file(s).\nPages link (1–2 min to update):\n"+Array.from(files).map(function(f){return pagesUrl(s,f.name);}).join("\n"));
+      document.getElementById("fileInput").value=""; listFiles();
+    }catch(e){ showStatus("Error: "+e.message); }
+  }
+  document.getElementById("password").addEventListener("keydown", function(e){ if(e.key==="Enter") unlock(); });
+  if(sessionStorage.getItem("unlocked")==="yes"){ document.getElementById("gate").style.display="none"; document.getElementById("library").style.display="block"; loadSettings(); }
+</script>
+</body>
+</html>
