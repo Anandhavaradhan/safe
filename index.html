@@ -16,6 +16,7 @@
   button.secondary{background:#334155;color:#fff}
   .file{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:14px;margin:12px 0}
   .file b{font-size:17px;word-break:break-all} .file span{font-size:14px;color:#94a3b8}
+  .file .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
   .file a{white-space:nowrap;background:#38bdf8;color:#082f49;font-weight:700;text-decoration:none;padding:10px 14px;border-radius:8px}
   #error{color:#fda4af;display:none;margin-top:10px}
   #library{display:none}
@@ -208,17 +209,42 @@
       if(!files.length){ document.getElementById("fileList").innerHTML="<p>No files yet. Upload one above.</p>"; return; }
       document.getElementById("fileList").innerHTML=files.map(function(f){
         const enc=/\.enc$/.test(f.name);
+        const viewable=enc && !!viewType(f.name.slice(0,-4));
+        const del=' <a href="#" data-del="'+esc(f.name)+'" data-sha="'+esc(f.sha)+'" title="Delete this file" style="background:#7f1d1d;color:#fff">Delete</a>';
         const links=enc
-          ? '<a href="#" data-open="'+esc(f.name)+'">🔒 Open</a>'
-          : '<a href="'+esc(pagesUrl(s,f.name))+'" target="_blank" rel="noopener">Pages</a> <a href="'+esc(rawUrl(s,f.name))+'" target="_blank" rel="noopener" style="background:#334155;color:#fff">Raw</a>';
-        return '<div class="file"><div><b>'+esc(enc?f.name.slice(0,-4):f.name)+'</b><br><span>'+Math.round(f.size/1024)+' KB'+(enc?' · encrypted':' · not encrypted')+'</span></div><div>'+links+'</div></div>';
+          ? (viewable?'<a href="#" data-open="'+esc(f.name)+'" data-view="1">🔒 View</a> ':'')+'<a href="#" data-open="'+esc(f.name)+'"'+(viewable?' style="background:#334155;color:#fff"':'')+'>'+(viewable?'Save':'🔒 Open')+'</a>'
+          : '<a href=""'+esc(pagesUrl(s,f.name))+'" target="_blank" rel="noopener">Pages</a> <a href="'+esc(rawUrl(s,f.name))+'" target="_blank" rel="noopener" style="background:#334155;color:#fff">Raw</a>';
+        return '<div class="file"><div><b>'+esc(enc?f.name.slice(0,-4):f.name)+'</b><br><span>'+Math.round(f.size/1024)+' KB'+(enc?' · encrypted':' · not encrypted')+'</span></div><div class="acts">'+links+del+'</div></div>';
       }).join("");
       document.querySelectorAll("#fileList [data-open]").forEach(function(a){
-        a.addEventListener("click", function(e){ e.preventDefault(); openEncrypted(a.getAttribute("data-open")); });
+        a.addEventListener("click", function(e){ e.preventDefault(); openEncrypted(a.getAttribute("data-open"), !!a.getAttribute("data-view")); });
+      });
+      document.querySelectorAll("#fileList [data-del]").forEach(function(a){
+        a.addEventListener("click", function(e){ e.preventDefault(); deleteFile(a.getAttribute("data-del"), a.getAttribute("data-sha")); });
       });
     }catch(e){ document.getElementById("fileList").innerHTML="<p style='color:#fda4af'>"+esc(e.message)+"</p>"; }
   }
-  async function openEncrypted(name){
+  // Kinds of file a browser can show safely in a tab. (Not HTML or SVG: they could run scripts.)
+  function viewType(name){
+    const ext=(name.split(".").pop()||"").toLowerCase();
+    return {png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",gif:"image/gif",webp:"image/webp",pdf:"application/pdf",
+      txt:"text/plain;charset=utf-8",md:"text/plain;charset=utf-8",csv:"text/plain;charset=utf-8",json:"text/plain;charset=utf-8",
+      mp3:"audio/mpeg",wav:"audio/wav",m4a:"audio/mp4",mp4:"video/mp4",webm:"video/webm"}[ext]||"";
+  }
+  async function deleteFile(name, sha){
+    const s=getSettings();
+    const shown=/\.enc$/.test(name)?name.slice(0,-4):name;
+    if(!confirm('Delete "'+shown+'" for good? This cannot be undone from this page.')) return;
+    showStatus("Deleting "+shown+"…");
+    try{
+      const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(name), {method:"DELETE", headers:apiHeaders(s),
+        body:JSON.stringify({message:"Delete "+name+" from Anandh's Files page", sha:sha, branch:s.branch})});
+      if(!r.ok){ const err=await r.json().catch(function(){return {};}); throw new Error(err.message||("GitHub said: "+r.status)); }
+      showStatus("Deleted "+shown+". (It stays in the repo's history; anyone with access to the repo could still recover it.)");
+      listFiles();
+    }catch(e){ showStatus("Error: "+e.message); }
+  }
+  async function openEncrypted(name, view){
     const s=getSettings();
     if(!sitePassword){ showStatus("Unlock the page first."); return; }
     showStatus("Downloading and decrypting "+name.slice(0,-4)+"…");
@@ -227,10 +253,13 @@
       const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(name)+"?ref="+encodeURIComponent(s.branch), {headers:h});
       if(!r.ok) throw new Error("GitHub said: "+r.status);
       const plain=await decryptBytes(new Uint8Array(await r.arrayBuffer()));
-      const url=URL.createObjectURL(new Blob([plain]));
-      const a=document.createElement("a"); a.href=url; a.download=name.slice(0,-4); document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
-      showStatus("Decrypted "+name.slice(0,-4)+". It is saved to your downloads.");
+      const type=view?viewType(name.slice(0,-4)):"";
+      const url=URL.createObjectURL(new Blob([plain], type?{type:type}:{}));
+      const a=document.createElement("a"); a.href=url;
+      if(type){ a.target="_blank"; a.rel="noopener"; } else { a.download=name.slice(0,-4); }
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, type?600000:60000);
+      showStatus("Decrypted "+name.slice(0,-4)+(type?". It is open in a new tab.":". It is saved to your downloads."));
     }catch(e){ showStatus("Error: "+e.message); }
   }
   function filterFiles(){
