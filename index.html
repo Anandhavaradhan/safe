@@ -97,7 +97,7 @@
   // under "Make the password check stronger".
   // SITE_PASSWORD_HASH is the older, fast SHA-256 check. It is used only while SITE_PASSWORD_CHECK is empty.
   // Changing the password does not re-encrypt old files: they still open only with the old password.
-  const SITE_PASSWORD_CHECK = "";
+  const SITE_PASSWORD_CHECK = "pbkdf2$600000$J9Uu/SGyiHusQUmjtO9Vvw==$Bw2d0PbiaVUWytvMQ1serycmWLGcz0GPOgH+Lb0kPjw=";
   const SITE_PASSWORD_HASH = "694a656c336cbca931681039afac63dce18a7154c1ed11cc77ed73b28c245415";
   const KDF_ITER = 600000;          // PBKDF2-SHA256 rounds, for both the check and file keys
   const ENC_MAGIC = "AFE1";         // file format: "AFE1" | salt(16) | iv(12) | AES-GCM ciphertext
