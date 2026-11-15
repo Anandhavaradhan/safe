@@ -62,9 +62,10 @@
     <div class="card">
       <h2>2. Upload from this page</h2>
       <input id="fileInput" type="file" multiple>
+      <label><input id="encrypt" type="checkbox" style="width:auto" checked> Encrypt with the site password (recommended)</label>
       <button onclick="uploadFiles()">Upload selected files</button>
       <div id="status"></div>
-      <p style="font-size:15px">After upload, the Pages link can take 1–2 minutes to update. The “Raw” link below works immediately.</p>
+      <p style="font-size:15px">Encrypted files are saved as <code>name.enc</code>. Open them with the <b>Open</b> button below; a direct link gives only scrambled bytes. Unencrypted files: the Pages link can take 1–2 minutes to update, and the “Raw” link works immediately.</p>
     </div>
 
     <div class="card">
@@ -75,16 +76,69 @@
       <button class="secondary" onclick="lock()">Lock site</button>
     </div>
 
+    <div class="card" id="upgradeCard" style="display:none">
+      <h2>Make the password check stronger</h2>
+      <p style="font-size:15px">This page still checks the password with a quick SHA-256 hash. Anyone can read that hash from the page source and test billions of guesses against it. To switch to a slow check, open <code>index.html</code> in your site repo and replace the line that starts with <code>const SITE_PASSWORD_CHECK</code> with this one:</p>
+      <input id="upgradeLine" readonly onclick="this.select()">
+      <button class="secondary" onclick="navigator.clipboard.writeText(document.getElementById('upgradeLine').value).then(function(){showStatus('Copied.');})">Copy line</button>
+    </div>
+
     <div class="card">
-      <p class="note"><b>Important:</b> This password screen hides the library, but it does <b>not</b> encrypt the files. Anyone who guesses a direct Pages link could open that file. Good for notes and ordinary files — not for ID documents or passwords. Free limits: keep the site under about 1 GB, and a file under 100 MB through the API (in practice, keep uploads under about 25 MB from a phone browser).</p>
+      <p class="note"><b>Important:</b> Files uploaded with “Encrypt” ticked are encrypted in your browser before they leave it (AES-256-GCM, with a key made from the site password). Without the password they can't be read, even from a direct link. Their <b>file names and sizes are still visible</b>, so don't put secrets in a file name. Files uploaded unencrypted, or before this option existed, can be opened by anyone who finds the link. Use a long password: anyone can try guesses against an encrypted file. Free limits: keep the site under about 1 GB, and a file under 100 MB through the API (in practice, keep uploads under about 25 MB from a phone browser).</p>
     </div>
   </div>
 </div>
 
 <script>
-  // Site password is stored only as a SHA-256 hash, not in plain text.
-  // To change it, replace the hash below with the SHA-256 hash of the new password.
+  // The site password is never stored in this page.
+  // SITE_PASSWORD_CHECK is a slow PBKDF2 check: "pbkdf2$<iterations>$<salt base64>$<hash base64>".
+  // When it is set, SITE_PASSWORD_HASH is ignored. To make one, unlock the page and copy the line
+  // under "Make the password check stronger".
+  // SITE_PASSWORD_HASH is the older, fast SHA-256 check. It is used only while SITE_PASSWORD_CHECK is empty.
+  // Changing the password does not re-encrypt old files: they still open only with the old password.
+  const SITE_PASSWORD_CHECK = "";
   const SITE_PASSWORD_HASH = "694a656c336cbca931681039afac63dce18a7154c1ed11cc77ed73b28c245415";
+  const KDF_ITER = 600000;          // PBKDF2-SHA256 rounds, for both the check and file keys
+  const ENC_MAGIC = "AFE1";         // file format: "AFE1" | salt(16) | iv(12) | AES-GCM ciphertext
+  let sitePassword = null;          // kept in memory only while unlocked
+
+  function esc(t){ return String(t).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+  function b64(bytes){ let bin=""; for(let i=0;i<bytes.length;i+=0x8000){ bin+=String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); } return btoa(bin); }
+  function unb64(t){ return Uint8Array.from(atob(t), function(c){ return c.charCodeAt(0); }); }
+  async function pbkdf2Bits(password, salt, iter){
+    const base=await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+    return new Uint8Array(await crypto.subtle.deriveBits({name:"PBKDF2", hash:"SHA-256", salt:salt, iterations:iter}, base, 256));
+  }
+  async function fileKey(password, salt){
+    const bits=await pbkdf2Bits(password, salt, KDF_ITER);
+    return crypto.subtle.importKey("raw", bits, "AES-GCM", false, ["encrypt","decrypt"]);
+  }
+  async function encryptBytes(bytes){
+    const salt=crypto.getRandomValues(new Uint8Array(16)), iv=crypto.getRandomValues(new Uint8Array(12));
+    const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM", iv:iv}, await fileKey(sitePassword, salt), bytes));
+    const out=new Uint8Array(4+16+12+ct.length);
+    out.set(new TextEncoder().encode(ENC_MAGIC),0); out.set(salt,4); out.set(iv,20); out.set(ct,32);
+    return out;
+  }
+  async function decryptBytes(data){
+    if(data.length<32 || new TextDecoder().decode(data.subarray(0,4))!==ENC_MAGIC) throw new Error("This is not a file encrypted by this page.");
+    try{
+      return new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv:data.subarray(20,32)}, await fileKey(sitePassword, data.subarray(4,20)), data.subarray(32)));
+    }catch(e){ throw new Error("Could not decrypt. It was encrypted with a different password, or it is damaged."); }
+  }
+  async function makeCheckLine(password){
+    const salt=crypto.getRandomValues(new Uint8Array(16));
+    const h=await pbkdf2Bits(password, salt, KDF_ITER);
+    return 'const SITE_PASSWORD_CHECK = "pbkdf2$'+KDF_ITER+'$'+b64(salt)+'$'+b64(h)+'";';
+  }
+  async function passwordOk(password){
+    if(SITE_PASSWORD_CHECK){
+      const p=SITE_PASSWORD_CHECK.split("$");
+      const h=await pbkdf2Bits(password, unb64(p[2]), parseInt(p[1],10));
+      return b64(h)===p[3];
+    }
+    return (await sha256Hex(password))===SITE_PASSWORD_HASH;
+  }
 
   function showStatus(text){ const s=document.getElementById("status"); s.style.display="block"; s.textContent=text; }
   async function sha256Hex(text){
@@ -92,18 +146,24 @@
     return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,"0"); }).join("");
   }
   async function unlock(){
-    const enteredHash = await sha256Hex(document.getElementById("password").value);
-    if(enteredHash === SITE_PASSWORD_HASH){
+    const pw=document.getElementById("password").value;
+    if(await passwordOk(pw)){
+      sitePassword=pw; document.getElementById("password").value="";
       document.getElementById("gate").style.display="none";
       document.getElementById("library").style.display="block";
       document.getElementById("error").style.display="none";
-      sessionStorage.setItem("unlocked","yes"); loadSettings(); listFiles();
+      loadSettings(); listFiles();
+      if(!SITE_PASSWORD_CHECK){
+        document.getElementById("upgradeLine").value=await makeCheckLine(pw);
+        document.getElementById("upgradeCard").style.display="block";
+      }
     } else { document.getElementById("error").style.display="block"; }
   }
   function lock(){
     document.getElementById("library").style.display="none";
     document.getElementById("gate").style.display="block";
-    document.getElementById("password").value=""; sessionStorage.removeItem("unlocked");
+    document.getElementById("password").value=""; sitePassword=null;
+    document.getElementById("upgradeCard").style.display="none"; document.getElementById("fileList").innerHTML="";
   }
   function getSettings(){
     const stored = localStorage.getItem("gh-settings") || sessionStorage.getItem("gh-settings") || "{}";
@@ -147,48 +207,68 @@
       const files=items.filter(x=>x.type==="file");
       if(!files.length){ document.getElementById("fileList").innerHTML="<p>No files yet. Upload one above.</p>"; return; }
       document.getElementById("fileList").innerHTML=files.map(function(f){
-        return '<div class="file"><div><b>'+f.name+'</b><br><span>'+Math.round(f.size/1024)+' KB</span></div><div><a href="'+pagesUrl(s,f.name)+'" target="_blank" rel="noopener">Pages</a> <a href="'+rawUrl(s,f.name)+'" target="_blank" rel="noopener" style="background:#334155;color:#fff">Raw</a></div></div>';
+        const enc=/\.enc$/.test(f.name);
+        const links=enc
+          ? '<a href="#" data-open="'+esc(f.name)+'">🔒 Open</a>'
+          : '<a href="'+esc(pagesUrl(s,f.name))+'" target="_blank" rel="noopener">Pages</a> <a href="'+esc(rawUrl(s,f.name))+'" target="_blank" rel="noopener" style="background:#334155;color:#fff">Raw</a>';
+        return '<div class="file"><div><b>'+esc(enc?f.name.slice(0,-4):f.name)+'</b><br><span>'+Math.round(f.size/1024)+' KB'+(enc?' · encrypted':' · not encrypted')+'</span></div><div>'+links+'</div></div>';
       }).join("");
-    }catch(e){ document.getElementById("fileList").innerHTML="<p style='color:#fda4af'>"+e.message+"</p>"; }
+      document.querySelectorAll("#fileList [data-open]").forEach(function(a){
+        a.addEventListener("click", function(e){ e.preventDefault(); openEncrypted(a.getAttribute("data-open")); });
+      });
+    }catch(e){ document.getElementById("fileList").innerHTML="<p style='color:#fda4af'>"+esc(e.message)+"</p>"; }
+  }
+  async function openEncrypted(name){
+    const s=getSettings();
+    if(!sitePassword){ showStatus("Unlock the page first."); return; }
+    showStatus("Downloading and decrypting "+name.slice(0,-4)+"…");
+    try{
+      const h=apiHeaders(s); h["Accept"]="application/vnd.github.raw+json"; delete h["Content-Type"];
+      const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(name)+"?ref="+encodeURIComponent(s.branch), {headers:h});
+      if(!r.ok) throw new Error("GitHub said: "+r.status);
+      const plain=await decryptBytes(new Uint8Array(await r.arrayBuffer()));
+      const url=URL.createObjectURL(new Blob([plain]));
+      const a=document.createElement("a"); a.href=url; a.download=name.slice(0,-4); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+      showStatus("Decrypted "+name.slice(0,-4)+". It is saved to your downloads.");
+    }catch(e){ showStatus("Error: "+e.message); }
   }
   function filterFiles(){
     const q=document.getElementById("search").value.toLowerCase();
     document.querySelectorAll("#fileList .file").forEach(function(el){ el.style.display=el.textContent.toLowerCase().includes(q)?"flex":"none"; });
   }
-  function fileToBase64(file){
-    return new Promise(function(resolve,reject){
-      const reader=new FileReader();
-      reader.onload=function(){ const buf=new Uint8Array(reader.result); let bin=""; const chunk=0x8000;
-        for(let i=0;i<buf.length;i+=chunk){ bin+=String.fromCharCode.apply(null, buf.subarray(i,i+chunk)); }
-        resolve(btoa(bin)); };
-      reader.onerror=reject; reader.readAsArrayBuffer(file);
-    });
-  }
+  async function fileBytes(file){ return new Uint8Array(await file.arrayBuffer()); }
   async function uploadFiles(){
     const s=getSettings();
     if(!s.user||!s.repo||!s.token){ showStatus("Fill in Settings first."); return; }
     const files=document.getElementById("fileInput").files;
     if(!files.length){ showStatus("Choose a file first."); return; }
+    const encrypt=document.getElementById("encrypt").checked;
+    if(encrypt && !sitePassword){ showStatus("Unlock the page again to encrypt."); return; }
+    const done=[];
     showStatus("Uploading… please keep this page open.");
     try{
       for(const file of files){
-        showStatus("Uploading "+file.name+"…");
-        const content=await fileToBase64(file);
+        const name=encrypt ? file.name+".enc" : file.name;
+        showStatus((encrypt?"Encrypting and uploading ":"Uploading ")+file.name+"…");
+        let bytes=await fileBytes(file);
+        if(encrypt) bytes=await encryptBytes(bytes);
+        const content=b64(bytes);
         // If the file already exists, GitHub needs its sha to overwrite it.
         let sha=null;
-        const check=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(file.name)+"?ref="+encodeURIComponent(s.branch), {headers:apiHeaders(s)});
+        const check=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(name)+"?ref="+encodeURIComponent(s.branch), {headers:apiHeaders(s)});
         if(check.ok){ const existing=await check.json(); sha=existing.sha; }
-        const body={message:"Upload "+file.name+" from Anandh's Files page", content:content, branch:s.branch};
+        const body={message:"Upload "+name+" from Anandh's Files page", content:content, branch:s.branch};
         if(sha) body.sha=sha;
-        const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(file.name), {method:"PUT", headers:apiHeaders(s), body:JSON.stringify(body)});
+        const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(name), {method:"PUT", headers:apiHeaders(s), body:JSON.stringify(body)});
         if(!r.ok){ const err=await r.json().catch(function(){return {};}); throw new Error("Upload failed for "+file.name+": "+(err.message||r.status)); }
+        done.push(name);
       }
-      showStatus("Done! Uploaded "+files.length+" file(s).\nPages link (1–2 min to update):\n"+Array.from(files).map(function(f){return pagesUrl(s,f.name);}).join("\n"));
+      showStatus("Done! Uploaded "+done.length+" file(s)"+(encrypt?", encrypted. Open them with the 🔒 Open button below.":".\nPages link (1–2 min to update):\n"+done.map(function(n){return pagesUrl(s,n);}).join("\n")));
       document.getElementById("fileInput").value=""; listFiles();
     }catch(e){ showStatus("Error: "+e.message); }
   }
   document.getElementById("password").addEventListener("keydown", function(e){ if(e.key==="Enter") unlock(); });
-  if(sessionStorage.getItem("unlocked")==="yes"){ document.getElementById("gate").style.display="none"; document.getElementById("library").style.display="block"; loadSettings(); }
 </script>
 </body>
 </html>
