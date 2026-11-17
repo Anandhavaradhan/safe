@@ -43,20 +43,23 @@
     <div class="card">
       <h2>1. Connect this page to your repo — once</h2>
       <p style="font-size:15px">GitHub Pages alone can't save a file — there's no server behind it. So this page talks straight to GitHub's free API to save the file into your repo, and then Pages serves it. Your token is only stored in <i>your</i> browser, never in the site files.</p>
-      <label>GitHub username</label><input id="ghUser" placeholder="e.g. anandh123">
-      <label>Repo name</label><input id="ghRepo" placeholder="e.g. my-files">
+      <label>GitHub username</label><input id="ghUser" value="Anandhavaradhan" placeholder="e.g. anandh123">
+      <label>Repo name</label><input id="ghRepo" value="safe" placeholder="e.g. my-files">
       <label>Branch (usually main)</label><input id="ghBranch" value="main">
       <label>GitHub token — Contents read/write for this repo only</label>
-      <input id="ghToken" type="password" placeholder="Paste token here — it is not saved in the repo">
-      <label><input id="remember" type="checkbox" style="width:auto"> Remember on this device only (don't tick this on a shared device)</label>
+      <input id="ghToken" type="password" placeholder="Paste token here — it is not saved in the repo" autocomplete="off" spellcheck="false">
+      <a id="makeToken" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener"
+         style="display:block;text-align:center;background:#334155;color:#fff;text-decoration:none;font-weight:700;padding:13px;border-radius:10px;margin-top:12px">Create a token on GitHub &rarr;</a>
+      <label><input id="remember" type="checkbox" style="width:auto" checked> Remember on this device only (untick this on a shared device)</label>
       <div class="row"><button onclick="saveSettings()">Save settings</button><button class="secondary" onclick="clearToken()">Forget token</button></div>
       <details style="margin-top:14px"><summary style="font-size:17px;cursor:pointer">How to get a free token (2 minutes)</summary>
       <ol>
-        <li>On github.com, go to Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.</li>
-        <li>Set it to <b>Only select repositories</b> and pick just this one repo.</li>
-        <li>Under Repository permissions, give <b>Contents: Read and write</b> only. Nothing else.</li>
-        <li>Copy the token, paste it above, and save. GitHub only shows it once, so keep it somewhere safe.</li>
-        <li>Make the repo first, and publish Pages from it (Settings → Pages → Deploy from a branch → main → / root), or this page will say “repo not found”.</li>
+        <li>Press <b>Create a token on GitHub</b> above (or go to Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token).</li>
+        <li>Give it any name, and an expiry you are happy with. A token that never expires never needs replacing; one that expires is safer if it ever leaks.</li>
+        <li>Repository access: <b>Only select repositories</b>, and pick <b>Anandhavaradhan/safe</b>.</li>
+        <li>Repository permissions: give <b>Contents: Read and write</b>. Nothing else is needed.</li>
+        <li>Generate it, copy it, paste it above and press Save settings. GitHub shows it only once.</li>
+        <li>The boxes above are already filled in for this repo, so the token is the only thing left.</li>
       </ol></details>
     </div>
 
@@ -170,13 +173,17 @@
     const stored = localStorage.getItem("gh-settings") || sessionStorage.getItem("gh-settings") || "{}";
     try { return JSON.parse(stored); } catch(e){ return {}; }
   }
+  // Where this page keeps its files when nothing has been saved on this device yet.
+  const DEFAULTS={user:"Anandhavaradhan", repo:"safe", branch:"main"};
   function loadSettings(){
     const s=getSettings();
-    document.getElementById("ghUser").value=s.user||"";
-    document.getElementById("ghRepo").value=s.repo||"";
-    document.getElementById("ghBranch").value=s.branch||"main";
+    const saved=!!(localStorage.getItem("gh-settings")||sessionStorage.getItem("gh-settings"));
+    document.getElementById("ghUser").value=s.user||DEFAULTS.user;
+    document.getElementById("ghRepo").value=s.repo||DEFAULTS.repo;
+    document.getElementById("ghBranch").value=s.branch||DEFAULTS.branch;
     document.getElementById("ghToken").value=s.token||"";
-    document.getElementById("remember").checked=!!localStorage.getItem("gh-settings");
+    // First visit: remember by default, so the token is asked for once per device.
+    document.getElementById("remember").checked=saved?!!localStorage.getItem("gh-settings"):true;
   }
   function saveSettings(){
     const s={user:document.getElementById("ghUser").value.trim(), repo:document.getElementById("ghRepo").value.trim(), branch:document.getElementById("ghBranch").value.trim()||"main", token:document.getElementById("ghToken").value.trim()};
@@ -184,7 +191,7 @@
     sessionStorage.removeItem("gh-settings"); localStorage.removeItem("gh-settings");
     if(document.getElementById("remember").checked){ localStorage.setItem("gh-settings", JSON.stringify(s)); }
     else { sessionStorage.setItem("gh-settings", JSON.stringify(s)); }
-    showStatus("Settings saved on this device only. Now press Refresh, or upload a file.");
+    showStatus("Connected to "+s.user+"/"+s.repo+" on branch "+s.branch+". Saved on this device only.");
     listFiles();
   }
   function clearToken(){
@@ -202,7 +209,13 @@
     try{
       const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files?ref="+encodeURIComponent(s.branch), {headers:apiHeaders(s)});
       if(r.status===401) throw new Error("Token is invalid or expired (401). Make a new token and paste it in Settings.");
-      if(r.status===404) throw new Error("Repo or files/ folder not found (404). Check username, repo, branch, and that the repo has a files/ folder.");
+      if(r.status===404){
+        // No files/ folder yet. Either the vault is empty, or the repo details are wrong: ask GitHub which.
+        const repo=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo, {headers:apiHeaders(s)});
+        if(repo.ok){ document.getElementById("fileList").innerHTML="<p>No files yet. Upload one above.</p>"; return; }
+        if(repo.status===401) throw new Error("Token is invalid or expired (401). Make a new token and paste it in Settings.");
+        throw new Error("Repo \""+s.user+"/"+s.repo+"\" not found, or this token cannot see it. Check the username and repo in Settings, and that the token grants Contents access to that repo.");
+      }
       if(!r.ok) throw new Error("GitHub said: "+r.status);
       const items=await r.json();
       const files=items.filter(x=>x.type==="file");
