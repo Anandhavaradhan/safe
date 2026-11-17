@@ -209,7 +209,7 @@
       if(!files.length){ document.getElementById("fileList").innerHTML="<p>No files yet. Upload one above.</p>"; return; }
       document.getElementById("fileList").innerHTML=files.map(function(f){
         const enc=/\.enc$/.test(f.name);
-        const viewable=enc && !!viewType(f.name.slice(0,-4));
+        const viewable=enc && !IN_APP && !!viewType(f.name.slice(0,-4));
         const del=' <a href="#" data-del="'+esc(f.name)+'" data-sha="'+esc(f.sha)+'" title="Delete this file" style="background:#7f1d1d;color:#fff">Delete</a>';
         const links=enc
           ? (viewable?'<a href="#" data-open="'+esc(f.name)+'" data-view="1">🔒 View</a> ':'')+'<a href="#" data-open="'+esc(f.name)+'"'+(viewable?' style="background:#334155;color:#fff"':'')+'>'+(viewable?'Save':'🔒 Open')+'</a>'
@@ -225,6 +225,8 @@
     }catch(e){ document.getElementById("fileList").innerHTML="<p style='color:#fda4af'>"+esc(e.message)+"</p>"; }
   }
   // Kinds of file a browser can show safely in a tab. (Not HTML or SVG: they could run scripts.)
+  // Inside the Android app a new tab cannot show a blob: file, so View saves it to Downloads instead.
+  const IN_APP = typeof AndroidHost !== "undefined";
   function viewType(name){
     const ext=(name.split(".").pop()||"").toLowerCase();
     return {png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",gif:"image/gif",webp:"image/webp",pdf:"application/pdf",
@@ -253,7 +255,7 @@
       const r=await fetch("https://api.github.com/repos/"+s.user+"/"+s.repo+"/contents/files/"+encodeURIComponent(name)+"?ref="+encodeURIComponent(s.branch), {headers:h});
       if(!r.ok) throw new Error("GitHub said: "+r.status);
       const plain=await decryptBytes(new Uint8Array(await r.arrayBuffer()));
-      const type=view?viewType(name.slice(0,-4)):"";
+      const type=(view && !IN_APP)?viewType(name.slice(0,-4)):"";
       const url=URL.createObjectURL(new Blob([plain], type?{type:type}:{}));
       const a=document.createElement("a"); a.href=url;
       if(type){ a.target="_blank"; a.rel="noopener"; } else { a.download=name.slice(0,-4); }
